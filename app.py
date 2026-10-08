@@ -37,7 +37,8 @@ with st.sidebar:
     except Exception:
         key = None
     key = key or os.getenv("GEMINI_API_KEY") or st.text_input("Gemini API key", type="password", help="Free key: aistudio.google.com/apikey")
-    model = st.selectbox("Model", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"])
+    MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+    model = st.selectbox("Model", MODELS)
     d = st.date_input("Demo date (data covers 2025)", S.now.date())
     S.now = S.now.replace(year=d.year, month=d.month, day=d.day)
     st.header("🧑‍💼 Staff panel")
@@ -107,7 +108,15 @@ def ask(prompt):
         hist.pop(0)
     hist.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
     cfg = types.GenerateContentConfig(system_instruction=system_prompt(), tools=TOOLS, temperature=0.4)
-    return client.models.generate_content(model=model, contents=hist, config=cfg).text
+    last = None
+    for m in [model] + [x for x in MODELS if x != model]:  # fall back to other models if one is unavailable
+        try:
+            return client.models.generate_content(model=m, contents=hist, config=cfg).text
+        except Exception as e:
+            last = e
+            if "404" not in str(e) and "NOT_FOUND" not in str(e):
+                raise
+    raise last
 
 # ---------- chat UI
 for role, text in st.session_state.msgs:
