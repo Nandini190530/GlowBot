@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import timedelta
 import pandas as pd
 import streamlit as st
@@ -22,6 +23,11 @@ st.markdown("""<style>
             unsafe_allow_html=True)
 
 CSV = os.path.join(os.path.dirname(__file__), "appointments_anonymized.csv")
+
+@st.cache_data
+def load_df():
+    return pd.read_csv(CSV)
+
 if "store" not in st.session_state:
     st.session_state.store = Store(CSV)
     st.session_state.msgs = [("assistant", "Hi! I'm GlowBot ✨ I can check availability, book, reschedule or cancel "
@@ -37,7 +43,7 @@ with st.sidebar:
     except Exception:
         key = None
     key = key or os.getenv("GEMINI_API_KEY") or st.text_input("Gemini API key", type="password", help="Free key: aistudio.google.com/apikey")
-    MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+    MODELS = ["gemini-3.5-flash-lite", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite"]
     model = st.selectbox("Model", MODELS)
     d = st.date_input("Demo date (data covers 2025)", S.now.date())
     S.now = S.now.replace(year=d.year, month=d.month, day=d.day)
@@ -54,7 +60,7 @@ with st.sidebar:
     for o in S.outbox[:8]:
         st.markdown(f"<div class='out'><b>{o['kind']}</b> → {o['to']} · <i>{o['when']}</i><br>{o['text']}</div>", unsafe_allow_html=True)
     with st.expander("📊 Dataset insights"):
-        df = pd.read_csv(CSV)
+        df = load_df()
         st.write(f"{len(df)} appointments · {df.client_pid.nunique()} clients")
         st.bar_chart(df.status.value_counts())
         st.bar_chart(pd.to_datetime(df.appt_datetime_utc).dt.hour.value_counts().sort_index())
@@ -103,18 +109,26 @@ TOOLS = [check_availability, book_appointment, list_my_appointments, cancel_appo
 def ask(prompt):
     client = genai.Client(api_key=key)
     hist = [types.Content(role="user" if r == "user" else "model", parts=[types.Part(text=t)])
-            for r, t in st.session_state.msgs[-13:-1] if not t.startswith(("⚠️", "🚫"))]
+            for r, t in st.session_state.msgs[-9:-1] if not t.startswith(("⚠️", "🚫"))]
     while hist and hist[0].role == "model":  # Gemini requires the conversation to start with a user turn
         hist.pop(0)
     hist.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
-    cfg = types.GenerateContentConfig(system_instruction=system_prompt(), tools=TOOLS, temperature=0.4)
+    base = dict(system_instruction=system_prompt(), tools=TOOLS, temperature=0.4, max_output_tokens=600)
+    cfgs = [types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_level="low"), **base),
+            types.GenerateContentConfig(**base)]  # 2nd = plain config if a model rejects the thinking setting
     last = None
     for m in [model] + [x for x in MODELS if x != model]:  # fall back to other models if one is unavailable
-        try:
-            return client.models.generate_content(model=m, contents=hist, config=cfg).text
-        except Exception as e:
-            last = e
-            if "404" not in str(e) and "NOT_FOUND" not in str(e):
+        for cfg in cfgs:
+            try:
+                return client.models.generate_content(model=m, contents=hist, config=cfg).text
+            except Exception as e:
+                last = e
+                msg = str(e)
+                if any(k in msg for k in ("404", "NOT_FOUND", "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "500", "INTERNAL")):
+                    time.sleep(0.5)
+                    break  # model missing / overloaded / rate-limited -> try the next model
+                if "thinking" in msg.lower() or "INVALID_ARGUMENT" in msg:
+                    continue  # retry same model without the thinking setting
                 raise
     raise last
 
@@ -140,7 +154,9 @@ if prompt:
             try:
                 reply = ask(prompt)
             except Exception as e:
-                reply = f"⚠️ AI error — {type(e).__name__}: {str(e)[:350]}"
+                reply = ("⚠️ Google's AI servers are busy right now — please press send again in a few seconds."
+                         if any(k in str(e) for k in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
+                         else f"⚠️ AI error — {type(e).__name__}: {str(e)[:350]}")
         st.markdown(reply)
     st.session_state.msgs.append(("assistant", reply))
     if S.events and S.events[-1] == "booked":
