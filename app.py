@@ -101,7 +101,10 @@ TOOLS = [check_availability, book_appointment, list_my_appointments, cancel_appo
 
 def ask(prompt):
     client = genai.Client(api_key=key)
-    hist = [types.Content(role="user" if r == "user" else "model", parts=[types.Part(text=t)]) for r, t in st.session_state.msgs[-12:]]
+    hist = [types.Content(role="user" if r == "user" else "model", parts=[types.Part(text=t)])
+            for r, t in st.session_state.msgs[-13:-1] if not t.startswith(("⚠️", "🚫"))]
+    while hist and hist[0].role == "model":  # Gemini requires the conversation to start with a user turn
+        hist.pop(0)
     hist.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
     cfg = types.GenerateContentConfig(system_instruction=system_prompt(), tools=TOOLS, temperature=0.4)
     return client.models.generate_content(model=model, contents=hist, config=cfg).text
@@ -112,12 +115,14 @@ for role, text in st.session_state.msgs:
         st.markdown(text)
 
 chips = ["Check availability tomorrow", "What services do you offer?", "How does your no-show policy work?", "Tell me a hair-care tip"]
-picked = st.pills("Quick questions", chips, label_visibility="collapsed") if hasattr(st, "pills") else None
+st.session_state.setdefault("pk", 0)
+picked = st.pills("Quick questions", chips, key=f"pill{st.session_state.pk}", label_visibility="collapsed") if hasattr(st, "pills") else None
 prompt = st.chat_input("Ask anything or book an appointment…") or picked
 if prompt:
     if not key:
         st.warning("Add your free Gemini API key in the sidebar (or in Streamlit secrets) to chat.")
         st.stop()
+    st.session_state.pk += 1  # resets the pills so they do not re-send
     st.session_state.msgs.append(("user", prompt))
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -126,7 +131,7 @@ if prompt:
             try:
                 reply = ask(prompt)
             except Exception as e:
-                reply = f"⚠️ Sorry, the AI service had a problem ({type(e).__name__}). Please try again in a moment."
+                reply = f"⚠️ AI error — {type(e).__name__}: {str(e)[:350]}"
         st.markdown(reply)
     st.session_state.msgs.append(("assistant", reply))
     if S.events and S.events[-1] == "booked":
