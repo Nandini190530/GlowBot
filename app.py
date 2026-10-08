@@ -1,11 +1,11 @@
 import os
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types
-from engine import Store, SERVICES
+from engine import Store, SERVICES, DEMO_PRICES, ICONS, quote
 
 st.set_page_config(page_title="GlowBot – Salon Appointment Assistant", page_icon="💇", layout="wide")
 st.markdown("""<style>
@@ -132,34 +132,125 @@ def ask(prompt):
                 raise
     raise last
 
-# ---------- chat UI
-for role, text in st.session_state.msgs:
-    with st.chat_message(role, avatar="💇" if role == "assistant" else None):
-        st.markdown(text)
+def chat_ui():
+    # ---------- chat UI
+    for role, text in st.session_state.msgs:
+        with st.chat_message(role, avatar="💇" if role == "assistant" else None):
+            st.markdown(text)
 
-chips = ["Check availability tomorrow", "What services do you offer?", "How does your no-show policy work?", "Tell me a hair-care tip"]
-st.session_state.setdefault("pk", 0)
-picked = st.pills("Quick questions", chips, key=f"pill{st.session_state.pk}", label_visibility="collapsed") if hasattr(st, "pills") else None
-prompt = st.chat_input("Ask anything or book an appointment…") or picked
-if prompt:
-    if not key:
-        st.warning("Add your free Gemini API key in the sidebar (or in Streamlit secrets) to chat.")
-        st.stop()
-    st.session_state.pk += 1  # resets the pills so they do not re-send
-    st.session_state.msgs.append(("user", prompt))
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    with st.chat_message("assistant", avatar="💇"):
-        with st.spinner("GlowBot is typing…"):
-            try:
-                reply = ask(prompt)
-            except Exception as e:
-                reply = ("⚠️ Google's AI servers are busy right now — please press send again in a few seconds."
-                         if any(k in str(e) for k in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
-                         else f"⚠️ AI error — {type(e).__name__}: {str(e)[:350]}")
-        st.markdown(reply)
-    st.session_state.msgs.append(("assistant", reply))
-    if S.events and S.events[-1] == "booked":
-        st.balloons()
-    S.events.clear()
-    st.rerun()
+    chips = ["Check availability tomorrow", "What services do you offer?", "How does your no-show policy work?", "Tell me a hair-care tip"]
+    st.session_state.setdefault("pk", 0)
+    picked = st.pills("Quick questions", chips, key=f"pill{st.session_state.pk}", label_visibility="collapsed") if hasattr(st, "pills") else None
+    prompt = st.chat_input("Ask anything or book an appointment…") or picked
+    if prompt:
+        if not key:
+            st.warning("Add your free Gemini API key in the sidebar (or in Streamlit secrets) to chat.")
+            st.stop()
+        st.session_state.pk += 1  # resets the pills so they do not re-send
+        st.session_state.msgs.append(("user", prompt))
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant", avatar="💇"):
+            with st.spinner("GlowBot is typing…"):
+                try:
+                    reply = ask(prompt)
+                except Exception as e:
+                    reply = ("⚠️ Google's AI servers are busy right now — please press send again in a few seconds."
+                             if any(k in str(e) for k in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
+                             else f"⚠️ AI error — {type(e).__name__}: {str(e)[:350]}")
+            st.markdown(reply)
+        st.session_state.msgs.append(("assistant", reply))
+        if S.events and S.events[-1] == "booked":
+            st.balloons()
+        S.events.clear()
+        st.rerun()
+
+# ---------- tap-to-book UI
+def slot_grid(slots, prefix, selected=None, cols=6):
+    clicked = None
+    if not slots:
+        st.warning("No free slots that day for this service - try another date.")
+        return None
+    cs = st.columns(cols)
+    for i, t in enumerate(slots):
+        if cs[i % cols].button(t, key=f"{prefix}{t}", type="primary" if t == selected else "secondary", use_container_width=True):
+            clicked = t
+    return clicked
+
+def price_txt(p):
+    return "Free" if p == 0 else f"₹{p:,}"
+
+def quick_book():
+    ss = st.session_state
+    ss.setdefault("qb_svc", None); ss.setdefault("qb_slot", None)
+    st.markdown("#### 1 · Tap a service")
+    cs = st.columns(3)
+    for i, (name, dur) in enumerate(SERVICES.items()):
+        label = f"{ICONS.get(name,'💇')} {name}  \n{dur} min · {price_txt(DEMO_PRICES.get(name,0))}"
+        if cs[i % 3].button(label, key=f"svc{i}", type="primary" if ss.qb_svc == name else "secondary", use_container_width=True):
+            ss.qb_svc, ss.qb_slot = name, None
+    if not ss.qb_svc:
+        st.info("Select a service to see its duration and quote.")
+        return
+    d = st.date_input("2 · Pick a date", S.now.date() + timedelta(days=1), min_value=S.now.date(), key="qb_date")
+    slots = S.free_slots(d.isoformat(), SERVICES[ss.qb_svc])["free_start_times"]
+    st.markdown(f"#### 2 · Tap a time  \n<span style='opacity:.7'>{len(slots)} free slots on {d:%A %d %b}</span>", unsafe_allow_html=True)
+    sel = slot_grid(slots, "qs", ss.qb_slot)
+    if sel:
+        ss.qb_slot = sel; st.rerun()
+    if ss.qb_slot and ss.qb_slot not in slots:
+        ss.qb_slot = None
+    start = datetime.strptime(f"{d} {ss.qb_slot}", "%Y-%m-%d %H:%M") if ss.qb_slot else None
+    q = quote(ss.qb_svc, start)
+    st.markdown(f"""<div class='out' style='font-size:15px'><b>{ICONS.get(ss.qb_svc,'💇')} {q['service']}</b><br>
+⏱ Duration: <b>{q['minutes']} min</b> · 💰 Quote: <b>{price_txt(q['price'])}</b> <i>(demo price)</i>
+{f"<br>🕒 {ss.qb_slot} → {q['ends']} on {d:%a %d %b}" if start else "<br>Pick a time to see your end time."}</div>""", unsafe_allow_html=True)
+    if ss.qb_slot:
+        clients = sorted({a["client"] for a in S.appts})
+        c = st.selectbox("3 · Who is booking?", clients, index=clients.index("Client_064"))
+        if S.no_shows(c) >= 2:
+            st.warning("This client has 2+ no-shows: a deposit link will be sent with the confirmation.")
+        if st.button("✅ Confirm booking", type="primary"):
+            r = S.book(c, ss.qb_svc, d.isoformat(), ss.qb_slot)
+            if r["ok"]:
+                st.success(f"Booked {r['service']} · {r['when']} (ref {r['ref']}). Confirmation + 24h reminder are in the Outbox.")
+                st.balloons(); ss.qb_slot = None
+            else:
+                st.error(r["error"])
+
+def my_appts():
+    ss = st.session_state
+    clients = sorted({a["client"] for a in S.appts})
+    c = st.selectbox("Client", clients, index=clients.index("Client_064"), key="ma_client")
+    ups = S.upcoming(c)
+    if not ups:
+        st.info("No upcoming appointments for this client. Use Quick book to create one.")
+    for a in ups:
+        c1, c2, c3 = st.columns([4, 1.3, 1.5])
+        c1.markdown(f"**{ICONS.get(a['service'],'💇')} {a['service']}** · {a['start']:%a %d %b %H:%M} ({a['dur']} min)  \n<span style='opacity:.6'>ref {a['ref']}</span>", unsafe_allow_html=True)
+        if c2.button("Cancel", key="c" + a["ref"]):
+            r = S.cancel(a["ref"]); pass
+            ss.ma_msg = r["policy"]; st.rerun()
+        if c3.button("Reschedule", key="r" + a["ref"]):
+            ss.rs_ref = a["ref"]
+    if ss.get("ma_msg"):
+        st.warning("Cancelled. " + ss.pop("ma_msg"))
+    ref = ss.get("rs_ref"); a = S._get(ref) if ref else None
+    if a and a["status"] not in ("cancelled", "rescheduled", "no_show"):
+        st.markdown(f"#### Move **{a['service']}** to…")
+        d = st.date_input("New date", a["start"].date(), min_value=S.now.date(), key="rs_date")
+        sel = slot_grid(S.free_slots(d.isoformat(), a["dur"])["free_start_times"], "rs")
+        if sel:
+            r = S.reschedule(ref, d.isoformat(), sel)
+            if r["ok"]:
+                ss.rs_ref = None; st.success(f"Moved to {r['new_time']}. Notice sent (see Outbox)."); st.balloons()
+            else:
+                st.error(r["error"])
+
+mode = st.radio("Mode", ["📅 Quick book (tap)", "🗓️ My appointments", "💬 Chat with AI"], horizontal=True, label_visibility="collapsed")
+if mode.startswith("📅"):
+    quick_book()
+elif mode.startswith("🗓️"):
+    my_appts()
+else:
+    chat_ui()
