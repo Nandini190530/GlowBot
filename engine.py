@@ -153,3 +153,21 @@ class Store:
                   }.get(n, "Please call the salon to arrange your next booking."))
         self.events.append("no_show")
         return dict(ok=True, client=a["client"], no_show_count=n, policy_applied=pol)
+
+
+# DEMO price list (the dataset has no prices) - replace with the salon's real rates.
+DEMO_PRICES = {"Women's Haircut": 800, "Blowout/styling": 600, "All over color": 2500,
+               "Partial Custom Highlight": 3500, "Full custom Highlight": 4500,
+               "Balayage/Foilayage": 6000, "Signature Blonde Session": 7000,
+               "Gloss with haircut": 1800, "Wax": 500, "Free Consultation": 0}
+ICONS = {"Women's Haircut": "✂️", "Blowout/styling": "💨", "All over color": "🎨", "Partial Custom Highlight": "✨",
+         "Full custom Highlight": "🌟", "Balayage/Foilayage": "🌅", "Signature Blonde Session": "👱‍♀️",
+         "Gloss with haircut": "💎", "Wax": "🪶", "Free Consultation": "💬"}
+
+
+def quote(service, start=None):
+    d = SERVICES[service]
+    q = dict(service=service, minutes=d, price=DEMO_PRICES.get(service, 0))
+    if start:
+        q["ends"] = (start + timedelta(minutes=d)).strftime("%H:%M")
+    return q
